@@ -157,9 +157,16 @@ body {
     opacity: 0;
     transition: opacity 0.4s, box-shadow 0.4s;
 }
+.seat.active-turn {
+    background: rgba(212,168,67,0.06);
+    box-shadow: 0 0 24px rgba(212,168,67,0.12);
+}
 .seat.active-turn::after {
     opacity: 1;
     box-shadow: 0 0 12px rgba(212,168,67,0.4);
+}
+.seat.active-turn .player-label {
+    color: var(--gold);
 }
 
 /* ===== HANDS ===== */
@@ -333,12 +340,12 @@ body {
     position: absolute; bottom: -16px; left: 50%; transform: translateX(-50%);
     font-size: 10px; color: rgba(255,255,255,0.4); white-space: nowrap;
 }
-#new-round-btn {
+#deal-btn, #new-round-btn {
     position: relative; z-index: 5;
     animation: bounce-in 0.5s cubic-bezier(0.34,1.56,0.64,1);
 }
-#new-round-btn.hidden { display: none; }
-#new-round-btn:hover {
+#deal-btn.hidden, #new-round-btn.hidden { display: none; }
+#deal-btn:hover, #new-round-btn:hover {
     transform: translateY(-2px);
 }
 
@@ -457,6 +464,19 @@ body {
 }
 .btn-split:hover:not(:disabled) { box-shadow: 0 4px 20px rgba(111,66,193,0.35), 0 0 40px rgba(111,66,193,0.15); }
 .action-btn.hidden-btn { display: none; }
+
+/* Turn indicator */
+#turn-label {
+    font-size: clamp(10px, 1.1vw, 12px);
+    font-weight: 700;
+    color: var(--gold);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 0 8px;
+    white-space: nowrap;
+    border-right: 1px solid rgba(255,255,255,0.1);
+    margin-right: 2px;
+}
 
 /* Double sub-buttons */
 .double-sub { display: flex; gap: 6px; }
@@ -801,6 +821,7 @@ kbd {
         <div id="divider-line"></div>
         <div id="table-logo">BLACKJACK</div>
         <div id="deck-visual"><span id="deck-count"></span></div>
+        <button class="btn-primary hidden" id="deal-btn">Deal</button>
         <button class="btn-primary hidden" id="new-round-btn">New Round</button>
     </div>
     <div id="players-row"></div>
@@ -808,6 +829,7 @@ kbd {
 
 <!-- Action Buttons -->
 <div id="actions" class="hidden">
+    <span id="turn-label"></span>
     <button class="action-btn btn-hit" id="hit-btn">Hit</button>
     <button class="action-btn btn-stand" id="stand-btn">Stand</button>
     <button class="action-btn btn-double" id="double-btn">Double</button>
@@ -947,6 +969,8 @@ function createSparkles() { const t=document.getElementById('game-table'); for(l
 
 // ===== GAME STATE =====
 const MAX_SEATS = 4;
+const NUM_DECKS = 6;
+const RESHUFFLE_AT = 60;
 const G = {
     deck: [], round: 1, phase: 'idle', muted: false, freePlay: false, tempBet: 0,
     currentTurnSeat: 0, currentBettingSeat: 0, draws: 0,
@@ -955,7 +979,7 @@ const G = {
 };
 
 function makeSeat(n) {
-    return { id: n, chips: 1000, wins: 0, totalBet: 0, hands: [], activeHand: 0, hasSplit: false, resultBadge: null, resultType: null };
+    return { id: n, chips: 1000, wins: 0, totalBet: 0, originalBet: 0, hands: [], activeHand: 0, hasSplit: false, resultBadge: null, resultType: null };
 }
 function makeHand() {
     return { cards: [], stood: false, busted: false, doubled: false, doubledFaceDown: false };
@@ -964,8 +988,9 @@ G.seats.push(makeSeat(1));
 
 // ===== DECK =====
 function createDeck() { const d=[]; for(const s of SUITS) for(const r of RANKS) d.push({suit:s,rank:r}); return d; }
+function createShoe() { const d=[]; for(let n=0;n<NUM_DECKS;n++) for(const s of SUITS) for(const r of RANKS) d.push({suit:s,rank:r}); return d; }
 function shuffle(a) { for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; }
-function drawCard() { return G.deck.pop(); }
+function drawCard() { if(G.deck.length===0) G.deck=shuffle(createShoe()); return G.deck.pop(); }
 
 // ===== HAND VALUE =====
 function calcHand(cards) {
@@ -1036,16 +1061,18 @@ function renderSeats() {
 
 function addSeat() {
     if (G.seats.length >= MAX_SEATS) return;
-    if (G.phase !== 'idle' && G.phase !== 'result') return;
+    if (G.phase !== 'idle' && G.phase !== 'ready' && G.phase !== 'result') return;
     const nextId = G.seats.length > 0 ? Math.max(...G.seats.map(s => s.id)) + 1 : 1;
-    G.seats.push(makeSeat(nextId));
+    const seat = makeSeat(nextId);
+    seat.hands = [makeHand()];
+    G.seats.push(seat);
     renderSeats();
     renderScoreboard();
     renderAllChips();
 }
 function removeSeat(idx) {
     if (G.seats.length <= 1) return;
-    if (G.phase !== 'idle' && G.phase !== 'result') return;
+    if (G.phase !== 'idle' && G.phase !== 'ready' && G.phase !== 'result') return;
     G.seats.splice(idx, 1);
     renderSeats();
     renderScoreboard();
@@ -1208,7 +1235,8 @@ function renderScoreboard() {
 // ===== CARD TRACKER =====
 function updateTracker() {
     const el=document.getElementById('tracker-content');const counts={};RANKS.forEach(r=>counts[r]=0);G.deck.forEach(c=>counts[c.rank]++);
-    el.innerHTML=RANKS.map(r=>{const n=counts[r];let bl='';for(let i=0;i<4;i++)bl+=i<n?'<span class="filled">\u25a0</span>':'<span class="empty">\u25a1</span>';return'<div class="tracker-row"><span class="tracker-rank">'+r+'</span><span class="tracker-blocks">'+bl+'</span><span class="tracker-count">'+n+'</span></div>';}).join('');
+    const perRank=NUM_DECKS*4;
+    el.innerHTML=RANKS.map(r=>{const n=counts[r];let bl='';const show=Math.min(perRank,8);const filled=Math.round((n/perRank)*show);for(let i=0;i<show;i++)bl+=i<filled?'<span class="filled">\u25a0</span>':'<span class="empty">\u25a1</span>';return'<div class="tracker-row"><span class="tracker-rank">'+r+'</span><span class="tracker-blocks">'+bl+'</span><span class="tracker-count">'+n+'</span></div>';}).join('');
 }
 
 // ===== OVERLAYS =====
@@ -1242,6 +1270,8 @@ function clearAllBadges() {
 }
 function showNewRound() { document.getElementById('new-round-btn').classList.remove('hidden'); }
 function hideNewRound() { document.getElementById('new-round-btn').classList.add('hidden'); }
+function showDeal() { document.getElementById('deal-btn').classList.remove('hidden'); }
+function hideDeal() { document.getElementById('deal-btn').classList.add('hidden'); }
 
 // ===== ACTIONS =====
 function showActions() {
@@ -1249,6 +1279,15 @@ function showActions() {
     el.classList.remove('hidden');
     document.getElementById('double-sub').classList.add('hidden');
     document.getElementById('double-btn').classList.remove('hidden-btn');
+    // Show turn label with current player name
+    const seat = G.seats[G.currentTurnSeat];
+    const label = document.getElementById('turn-label');
+    if (seat && G.seats.length > 1) {
+        label.textContent = 'P' + seat.id;
+        label.style.display = '';
+    } else {
+        label.style.display = 'none';
+    }
     updateActionButtons();
 }
 function hideActions() { document.getElementById('actions').classList.add('hidden'); }
@@ -1258,7 +1297,7 @@ function updateActionButtons() {
     const hand = seat.hands[seat.activeHand];
     if (!hand) return;
     const cc = hand.cards.length;
-    const canDbl = cc === 2 && !hand.doubled && (G.freePlay || seat.chips >= seat.totalBet / (seat.hasSplit ? 2 : 1));
+    const canDbl = cc === 2 && !hand.doubled && (G.freePlay || seat.chips >= seat.originalBet);
     const canSplit = cc === 2 && !seat.hasSplit && hand.cards[0].rank === hand.cards[1].rank && (G.freePlay || seat.chips >= seat.totalBet);
     document.getElementById('double-btn').classList.toggle('hidden-btn', !canDbl);
     document.getElementById('double-sub').classList.add('hidden');
@@ -1266,17 +1305,34 @@ function updateActionButtons() {
 }
 
 // ===== GAME FLOW =====
-function startRound() {
+function prepareRound() {
+    G.phase = 'ready';
     G.seats.forEach(seat => {
-        seat.hands = [makeHand()]; seat.activeHand = 0; seat.hasSplit = false; seat.totalBet = 0;
+        seat.hands = [makeHand()]; seat.activeHand = 0; seat.hasSplit = false; seat.totalBet = 0; seat.originalBet = 0;
         seat.resultBadge = null; seat.resultType = null;
     });
     G.dealer.hands = [makeHand()]; G.dealer.activeHand = 0; G.dealer.resultBadge = null; G.dealer.resultType = null;
-    G.deck = shuffle(createDeck());
+    G.seats.forEach((_, i) => { renderSeatHands(i, false); renderSeatValues(i, false); renderSeatBet(i); });
+    renderDealerHands(false); renderDealerValues(false);
+    clearAllBadges(); renderAllChips(); hideNewRound(); hideActions();
+    document.querySelectorAll('.seat').forEach(s => s.classList.remove('active-turn'));
+    document.getElementById('dealer-area').classList.remove('active-turn');
+    showDeal();
+}
+function startRound() {
+    G.seats.forEach(seat => {
+        seat.hands = [makeHand()]; seat.activeHand = 0; seat.hasSplit = false; seat.totalBet = 0; seat.originalBet = 0;
+        seat.resultBadge = null; seat.resultType = null;
+    });
+    G.dealer.hands = [makeHand()]; G.dealer.activeHand = 0; G.dealer.resultBadge = null; G.dealer.resultType = null;
+    // Reshuffle if deck is running low
+    if (G.deck.length < RESHUFFLE_AT) {
+        G.deck = shuffle(createShoe());
+    }
     updateDeckVisual(); updateTracker();
     G.seats.forEach((_, i) => { renderSeatHands(i, false); renderSeatValues(i, false); renderSeatBet(i); });
     renderDealerHands(false); renderDealerValues(false);
-    clearAllBadges(); renderAllChips(); hideNewRound();
+    clearAllBadges(); renderAllChips(); hideNewRound(); hideDeal();
     document.querySelectorAll('.seat').forEach(s => s.classList.remove('active-turn'));
     document.getElementById('dealer-area').classList.remove('active-turn');
 
@@ -1315,7 +1371,7 @@ function clearBet() {
 }
 function confirmBet() {
     const seat = G.seats[G.currentBettingSeat];
-    seat.totalBet = G.tempBet; seat.chips -= G.tempBet;
+    seat.totalBet = G.tempBet; seat.originalBet = G.tempBet; seat.chips -= G.tempBet;
     hideOverlay('betting-overlay');
     renderSeatBet(G.currentBettingSeat); renderAllChips();
     if (G.currentBettingSeat < G.seats.length - 1) {
@@ -1415,7 +1471,7 @@ function executeDouble(faceDown) {
     const seat = G.seats[G.currentTurnSeat];
     const hand = seat.hands[seat.activeHand];
     if (!G.freePlay) {
-        const add = seat.totalBet / (seat.hasSplit ? 2 : 1);
+        const add = seat.originalBet;
         if (seat.chips < add) return;
         seat.chips -= add; seat.totalBet += add;
         renderAllChips(); renderSeatBet(G.currentTurnSeat);
@@ -1633,7 +1689,7 @@ function newRound() {
     G.round++;
     document.querySelectorAll('.bj-glow').forEach(e => e.classList.remove('bj-glow'));
     renderSeats(); renderScoreboard();
-    startRound();
+    prepareRound();
 }
 
 // ===== RESET =====
@@ -1642,13 +1698,13 @@ function fullReset() {
     G.dealer.wins = 0; G.dealer.hands = [makeHand()]; G.dealer.resultBadge = null;
     G.seats = [makeSeat(1)];
     renderSeats(); renderScoreboard(); renderAllChips(); hideActions(); hideNewRound();
-    startRound();
+    prepareRound();
 }
 function newGame() {
     G.round++;
-    G.seats.forEach(s => { s.chips = 1000; s.totalBet = 0; s.hands = [makeHand()]; s.activeHand = 0; s.hasSplit = false; });
+    G.seats.forEach(s => { s.chips = 1000; s.totalBet = 0; s.originalBet = 0; s.hands = [makeHand()]; s.activeHand = 0; s.hasSplit = false; });
     G.dealer.hands = [makeHand()];
-    renderSeats(); renderAllChips(); hideActions(); hideNewRound(); startRound();
+    renderSeats(); renderAllChips(); hideActions(); hideNewRound(); prepareRound();
 }
 function toggleMode() {
     G.freePlay = !G.freePlay;
@@ -1657,9 +1713,9 @@ function toggleMode() {
     if (G.phase !== 'idle') {
         hideOverlay('betting-overlay'); hideActions(); hideNewRound();
         G.round = 1; G.draws = 0; G.dealer.wins = 0;
-        G.seats.forEach(s => { s.chips = 1000; s.wins = 0; s.totalBet = 0; s.hands = [makeHand()]; s.activeHand = 0; s.hasSplit = false; });
+        G.seats.forEach(s => { s.chips = 1000; s.wins = 0; s.totalBet = 0; s.originalBet = 0; s.hands = [makeHand()]; s.activeHand = 0; s.hasSplit = false; });
         G.dealer.hands = [makeHand()];
-        renderSeats(); renderScoreboard(); startRound();
+        renderSeats(); renderScoreboard(); prepareRound();
     }
 }
 
@@ -1673,6 +1729,7 @@ document.getElementById('double-btn').addEventListener('click', showDoubleChoice
 document.getElementById('double-up-btn').addEventListener('click', () => executeDouble(false));
 document.getElementById('double-dn-btn').addEventListener('click', () => executeDouble(true));
 document.getElementById('split-btn').addEventListener('click', split);
+document.getElementById('deal-btn').addEventListener('click', () => { hideDeal(); startRound(); });
 document.getElementById('new-round-btn').addEventListener('click', newRound);
 document.getElementById('reset-btn').addEventListener('click', () => showOverlay('reset-modal'));
 document.getElementById('reset-cancel').addEventListener('click', () => hideOverlay('reset-modal'));
@@ -1692,6 +1749,7 @@ document.addEventListener('keydown', (e) => {
     else if (key === 's' && G.phase === 'turn') stand();
     else if (key === 'd' && G.phase === 'turn') showDoubleChoice();
     else if (key === 'p' && G.phase === 'turn') split();
+    else if ((key === ' ' || key === 'enter') && G.phase === 'ready') { e.preventDefault(); hideDeal(); startRound(); }
     else if ((key === ' ' || key === 'enter') && G.phase === 'result') { e.preventDefault(); newRound(); }
     else if (key === 'r') {
         if (document.getElementById('reset-modal').classList.contains('active')) { hideOverlay('reset-modal'); hideOverlay('betting-overlay'); fullReset(); }
@@ -1706,11 +1764,11 @@ document.addEventListener('keydown', (e) => {
 // ===== WELCOME SCREEN =====
 document.getElementById('start-chips').addEventListener('click', () => {
     G.freePlay = false; document.getElementById('mode-btn').textContent = 'Free Play';
-    hideOverlay('welcome-overlay'); renderSeats(); renderAllChips(); startRound();
+    hideOverlay('welcome-overlay'); renderSeats(); renderAllChips(); prepareRound();
 });
 document.getElementById('start-free').addEventListener('click', () => {
     G.freePlay = true; document.getElementById('mode-btn').textContent = 'Chip Mode';
-    hideOverlay('welcome-overlay'); renderSeats(); renderAllChips(); startRound();
+    hideOverlay('welcome-overlay'); renderSeats(); renderAllChips(); prepareRound();
 });
 
 // ===== INIT =====
